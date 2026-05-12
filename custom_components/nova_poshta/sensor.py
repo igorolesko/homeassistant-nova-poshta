@@ -1,13 +1,8 @@
-"""Home Assistant component for accessing the Nova Poshta API.
-
-The sensor component creates multipe sensors regarding Nova Poshta status.
-"""
-
+"""Home Assistant sensors for Nova Poshta — трекінг по ТТН."""
 from __future__ import annotations
 
 import logging
-from typing import cast
-from stringcase import snakecase
+from typing import Any
 
 from homeassistant.components.sensor import (
     SensorEntity,
@@ -18,13 +13,10 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.typing import StateType
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import (
-    DOMAIN,
-)
+from .const import DOMAIN, TRACKING_STATUSES
 from .coordinator import NovaPoshtaCoordinator
-from .entity import NovaPoshtaEntity
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -32,57 +24,81 @@ _LOGGER = logging.getLogger(__name__)
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
-    """Create Nova Poshta sensor entities in HASS."""
+    """Створити сенсори Nova Poshta."""
     coordinator: NovaPoshtaCoordinator = hass.data[DOMAIN][entry.entry_id]
 
-    known_warehouses: set[frozenset] = set()
+    # Чотири фіксованих сенсори — по одному на групу статусів
+    async_add_entities([
+        NovaPoshtaGroupSensor(
+            coordinator, entry,
+            key="in_transit",
+            name="В дорозі",
+            icon="mdi:truck-delivery",
+            parcels_attr="in_transit",
+        ),
+        NovaPoshtaGroupSensor(
+            coordinator, entry,
+            key="arrived",
+            name="Чекає у відділенні",
+            icon="mdi:package-down",
+            parcels_attr="arrived",
+        ),
+        NovaPoshtaGroupSensor(
+            coordinator, entry,
+            key="delivered",
+            name="Отримано",
+            icon="mdi:package-check",
+            parcels_attr="delivered",
+        ),
+        NovaPoshtaGroupSensor(
+            coordinator, entry,
+            key="problem",
+            name="Потребує уваги",
+            icon="mdi:alert-circle-outline",
+            parcels_attr="problem",
+        ),
+    ])
 
-    def _check_warehouses() -> None:
-        current_warehouses = set(coordinator.warehouses)
-        new_warehouses = current_warehouses - known_warehouses
 
-        # _LOGGER.debug(f"New warehouses: {new_warehouses}")
-        if new_warehouses:
-            known_warehouses.update(new_warehouses)
-            async_add_entities(
-                [
-                    NovaPoshtaSensor(coordinator, entry, warehouse)
-                    for warehouse in new_warehouses
-                ]
-            )
+def _format_parcel(p: dict) -> dict[str, Any]:
+    """Форматує посилку для атрибутів сенсора."""
+    status_code = str(p.get("StatusCode", ""))
+    return {
+        "ttn":           p.get("Number", ""),
+        "status":        TRACKING_STATUSES.get(status_code, p.get("Status", "")),
+        "description":   p.get("CargoDescriptionString", ""),
+        "sender":        p.get("CounterpartySenderDescription", ""),
+        "from":          p.get("CitySender", ""),
+        "to":            p.get("CityRecipient", ""),
+        "warehouse":     p.get("WarehouseRecipient", ""),
+        "weight_kg":     p.get("FactualWeight", p.get("DocumentWeight", "")),
+        "cost_uah":      p.get("DocumentCost", ""),
+        "announced_uah": p.get("AnnouncedPrice", ""),
+        "scheduled":     p.get("ScheduledDeliveryDate", ""),
+        "received":      p.get("RecipientDateTime", ""),
+        "additional":    p.get("AdditionalInformationEW", ""),
+    }
 
-    _check_warehouses()
-    entry.async_on_unload(coordinator.async_add_listener(_check_warehouses))
 
+class NovaPoshtaGroupSensor(CoordinatorEntity[NovaPoshtaCoordinator], SensorEntity):
+    """Сенсор для групи посилок (в дорозі / у відділенні / отримано / проблема)."""
 
-class NovaPoshtaSensor(NovaPoshtaEntity, SensorEntity):
-    """Representation of the Nova Poshta sensor."""
-
-    _warehouse: dict
+    _attr_state_class = SensorStateClass.TOTAL
 
     def __init__(
         self,
         coordinator: NovaPoshtaCoordinator,
         entry: ConfigEntry,
-        warehouse: frozenset,
+        key: str,
+        name: str,
+        icon: str,
+        parcels_attr: str,
     ) -> None:
-        """Initialize a Nova Poshta entity."""
         super().__init__(coordinator)
-
-        self._warehouse = dict(warehouse)
-        sep = "@" if self._warehouse["id"] else ""
-        self.entity_description = SensorEntityDescription(
-            key=f"delivered_parcels_{snakecase(self._warehouse['name'])}_{self._warehouse['id']}",
-            name=f"Delivered parcels in {self._warehouse['name']}{sep}{self._warehouse['id']}",
-            state_class=SensorStateClass.TOTAL,
-            icon="mdi:package-down",
-        )
-        self._attr_unique_id = "-".join(
-            [
-                entry.entry_id,
-                self.entity_description.key,
-            ]
-        )
+        self._parcels_attr = parcels_attr
+        self._attr_unique_id = f"{entry.entry_id}_{key}"
+        self._attr_icon = icon
+        self._attr_name = f"Nova Poshta {name}"
         self._attr_device_info = DeviceInfo(
             name=entry.title,
             identifiers={(DOMAIN, entry.entry_id)},
@@ -90,22 +106,18 @@ class NovaPoshtaSensor(NovaPoshtaEntity, SensorEntity):
         )
 
     @property
-    def native_value(self) -> StateType:
-        """Return the state of the sensor."""
-        return cast(StateType, len(self._parcels))
-
-    @property
-    def extra_state_attributes(self) -> dict[str, str] | None:
-        """Return the state attributes."""
-        return {
-            "parcels": list(
-                map(
-                    lambda x: f"{x['CargoDescription']} - {x['CounterpartySenderDescription']}",
-                    self._parcels,
-                )
-            )
-        }
-
-    @property
     def _parcels(self) -> list[dict]:
-        return self.coordinator.delivered_by_warehouse(self._warehouse["id"])
+        return getattr(self.coordinator, self._parcels_attr, [])
+
+    @property
+    def native_value(self) -> int:
+        """Кількість посилок у цій групі."""
+        return len(self._parcels)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Деталі кожної посилки."""
+        return {
+            "parcels": [_format_parcel(p) for p in self._parcels],
+            "total": len(self._parcels),
+        }
