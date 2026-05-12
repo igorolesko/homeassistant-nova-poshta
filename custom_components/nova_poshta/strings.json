@@ -1,1 +1,40 @@
-{}
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Nova Poshta",
+        "description": "Введіть API ключ, номер телефону та номери ТТН для відстеження.",
+        "data": {
+          "api_key": "API ключ",
+          "phone": "Номер телефону (380XXXXXXXXX)",
+          "tracking_numbers": "Номери ТТН через кому"
+        },
+        "data_description": {
+          "tracking_numbers": "Наприклад: {ttns_example}"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Невірний API ключ",
+      "cannot_connect": "Не вдалося підключитися до Nova Poshta API",
+      "invalid_ttns": "Введіть хоча б один номер ТТН (14 цифр)"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Налаштування відстеження",
+        "description": "Додайте або видаліть номери ТТН.",
+        "data": {
+          "tracking_numbers": "Номери ТТН через кому"
+        },
+        "data_description": {
+          "tracking_numbers": "Наприклад: {ttns_example}"
+        }
+      }
+    },
+    "error": {
+      "invalid_ttns": "Введіть хоча б один номер ТТН"
+    }
+  }
+}
